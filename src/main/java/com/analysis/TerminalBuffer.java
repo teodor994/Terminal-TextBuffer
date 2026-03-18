@@ -34,13 +34,14 @@ public class TerminalBuffer {
             }
         }
 
-        this.totalLines = height;
+        this.totalLines = 0;
     }
 
 
     public Cell getCell(int col, int row, boolean fromScrollback) {
-        int logicalRow = fromScrollback ? row : (Math.max(0, totalLines - height) + row);
-        if (logicalRow < 0 || logicalRow >= totalLines || col < 0 || col >= width) {
+        int scrollbackCount = Math.max(0, totalLines - height);
+        int logicalRow = fromScrollback ? row : (scrollbackCount + row);
+        if (col < 0 || col >= width || logicalRow < 0 || logicalRow >= totalCapacity) {
             return null;
         }
         return buffer[getPhysicalIndex(logicalRow)][col];
@@ -75,7 +76,8 @@ public class TerminalBuffer {
 
     public void setCursor(int col, int row) {
         this.cursorCol = Math.max(0, Math.min(col, width - 1));
-        this.cursorRow = Math.max(0, Math.min(row, height - 1));
+        int scrollbackCount = Math.max(0, totalLines - height);
+        this.cursorRow = Math.max(0, Math.min(row - scrollbackCount, height - 1));
     }
 
     public void moveCursor(int deltaCol, int deltaRow) {
@@ -85,14 +87,14 @@ public class TerminalBuffer {
     // Clear screen AND scrollback (Hard reset)
     public void clearAll() {
         startPtr = 0;
-        totalLines = height;
+        totalLines = 0;
+        cursorCol = 0;
+        cursorRow = 0;
         for (int r = 0; r < totalCapacity; r++) {
             for (int c = 0; c < width; c++) {
                 buffer[r][c].reset(' ', 0, 0, false, false, false);
             }
         }
-        cursorCol = 0;
-        cursorRow = 0;
     }
 
     private Cell getCellAtScreenPos(int col, int row) {
@@ -102,11 +104,14 @@ public class TerminalBuffer {
     }
 
     private int getPhysicalIndex(int row) {
+        if (totalCapacity == 0) return 0;
         return (startPtr + row) % totalCapacity;
     }
 
     public void writeText(String text) {
         for (char c : text.toCharArray()) {
+            if (totalLines == 0) totalLines = 1;
+
             if (c == '\n') {
                 lineFeed();
                 continue;
@@ -133,32 +138,31 @@ public class TerminalBuffer {
         cursorCol = 0;
         if (cursorRow < height - 1) {
             cursorRow++;
-        } else {
-            // last line => Scroll up
-            // advance the start pointer to "remove" the top line
-            startPtr = (startPtr + 1) % totalCapacity;
 
-            // buffer not full => we can add more lines without losing old ones
-            if (totalLines < totalCapacity) {
+            int scrollbackCount = Math.max(0, totalLines - height) + cursorRow;;
+            if (scrollbackCount >= totalLines) {
                 totalLines++;
             }
-
-            // cleaned the new bottom line
-            int newBottomRow = getScreenRowPhysical(height - 1);
+        } else {
+            if (totalLines < totalCapacity) {
+                totalLines++;
+            } else {
+                startPtr = (startPtr + 1) % totalCapacity;
+            }
+            int newBottomPhys = getScreenRowPhysical(height - 1);
             for (int i = 0; i < width; i++) {
-                buffer[newBottomRow][i].reset(' ', 0, 0, false, false, false);
+                buffer[newBottomPhys][i].reset(' ', 0, 0, false, false, false);
             }
         }
     }
 
     private int getScreenRowPhysical(int screenRow) {
-        // number of lines in scrollback (lines that are not currently visible on screen)
         int scrollbackCount = Math.max(0, totalLines - height);
-        // logical Index of the line on the screen (0-based) + scrollbackCount = logical index in the buffer
         return getPhysicalIndex(scrollbackCount + screenRow);
     }
 
     public void fillCurrentLine(char c) {
+        if (totalLines == 0) totalLines = 1;
         int physicalRow = getScreenRowPhysical(cursorRow);
         for (int col = 0; col < width; col++) {
             buffer[physicalRow][col].reset(c, currentFg, currentBg, bold, italic, underline);
@@ -167,13 +171,14 @@ public class TerminalBuffer {
 
     // line as String
     public String getLineContent(int logicalRow) {
-        if (logicalRow < 0 || logicalRow >= totalLines) return "";
-
-        int physicalIndex = getPhysicalIndex(logicalRow);
-        StringBuilder sb = new StringBuilder();
-        for (Cell cell : buffer[physicalIndex]) {
-            sb.append(cell.character);
+        if (logicalRow < 0 || logicalRow >= totalLines) {
+            char[] spaces = new char[width];
+            java.util.Arrays.fill(spaces, ' ');
+            return new String(spaces);
         }
+        int physIdx = getPhysicalIndex(logicalRow);
+        StringBuilder sb = new StringBuilder();
+        for (Cell cell : buffer[physIdx]) sb.append(cell.character);
         return sb.toString();
     }
 
@@ -226,17 +231,20 @@ public class TerminalBuffer {
         if (cursorCol > 0) {
             cursorCol--;
             clearCell(cursorCol, cursorRow);
+        } else if (cursorRow > 0) {
+            cursorRow--;
+            moveToEndOfTextOnRow(cursorRow);
+            if (cursorCol > 0) {
+                cursorCol--;
+                clearCell(cursorCol, cursorRow);
+            }
         } else {
-            if (cursorRow > 0) {
-                cursorRow--;
-                moveToEndOfTextOnRow(cursorRow);
-            } else {
-                int scrollbackCount = Math.max(0, totalLines - height);
-
-                if (scrollbackCount > 0) {
-                    startPtr = (startPtr - 1 + totalCapacity) % totalCapacity;
-
-                    moveToEndOfTextOnRow(0);
+            if (totalLines > height) {
+                startPtr = (startPtr - 1 + totalCapacity) % totalCapacity;
+                moveToEndOfTextOnRow(0);
+                if (cursorCol > 0) {
+                    cursorCol--;
+                    clearCell(cursorCol, 0);
                 }
             }
         }
@@ -244,20 +252,14 @@ public class TerminalBuffer {
 
     private void moveToEndOfTextOnRow(int screenRow) {
         int physRow = getScreenRowPhysical(screenRow);
-        int lastContentCol = 0;
-
+        int lastChar = 0;
         for (int c = width - 1; c >= 0; c--) {
             if (buffer[physRow][c].character != ' ') {
-                lastContentCol = Math.min(c + 1, width - 1);
+                lastChar = c + 1;
                 break;
             }
         }
-        cursorCol = lastContentCol;
-
-        if (cursorCol > 0) {
-            cursorCol--;
-            clearCell(cursorCol, screenRow);
-        }
+        cursorCol = Math.min(lastChar, width - 1);
     }
 
     // reset a cell to empty
@@ -271,6 +273,15 @@ public class TerminalBuffer {
     }
 
     public int getCursorRow() {
-        return this.cursorRow;
+        int scrollbackCount = Math.max(0, totalLines - height);
+        return scrollbackCount + cursorRow;
+    }
+
+    public int getTotalLines() {
+        return totalLines;
+    }
+
+    public int getHeight() {
+        return height;
     }
 }
