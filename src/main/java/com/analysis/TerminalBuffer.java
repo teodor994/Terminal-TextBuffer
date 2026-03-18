@@ -53,4 +53,34 @@ public class TerminalBuffer {
             System.out.println();
         }
     }
+
+    // Cursor
+
+    public void setAttributes(int fg, int bg, boolean b, boolean i, boolean u) {
+        this.currentFg = fg;
+        this.currentBg = bg;
+        this.bold = b;
+        this.italic = i;
+        this.underline = u;
+    }
+
+    public void setCursor(int col, int row) {
+        this.cursorCol = Math.max(0, Math.min(col, width - 1));
+        this.cursorRow = Math.max(0, Math.min(row, height - 1));
+    }
+
+    public void moveCursor(int deltaCol, int deltaRow) {
+        setCursor(cursorCol + deltaCol, cursorRow + deltaRow);
+    }
+
+
+    private Cell getCellAtScreenPos(int col, int row) {
+        int scrollbackCount = Math.max(0, totalLines - height);
+        int physicalRow = getPhysicalIndex(scrollbackCount + row);
+        return buffer[physicalRow][col];
+    }
+
+    private int getPhysicalIndex(int row) {
+        return (startPtr + row) % totalCapacity;
+    }
 }
