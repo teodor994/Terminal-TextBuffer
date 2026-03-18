@@ -37,6 +37,15 @@ public class TerminalBuffer {
         this.totalLines = height;
     }
 
+
+    public Cell getCell(int col, int row, boolean fromScrollback) {
+        int logicalRow = fromScrollback ? row : (Math.max(0, totalLines - height) + row);
+        if (logicalRow < 0 || logicalRow >= totalLines || col < 0 || col >= width) {
+            return null;
+        }
+        return buffer[getPhysicalIndex(logicalRow)][col];
+    }
+
     public void drawToSystemConsole() {
         System.out.print("\033[H");
 
@@ -103,6 +112,10 @@ public class TerminalBuffer {
                 continue;
             }
 
+            if (c == '\b') { // added backspace support
+                backspace();
+                continue;
+            }
             // newline?
             if (cursorCol >= width) {
                 lineFeed();
@@ -181,5 +194,51 @@ public class TerminalBuffer {
             sb.append(getLineContent(i)).append("\n");
         }
         return sb.toString();
+    }
+
+    public void insertText(String text) {
+        for (char c : text.toCharArray()) {
+            if (c == '\n') {
+                lineFeed();
+                continue;
+            }
+            if (cursorCol >= width) {
+                lineFeed();
+            }
+
+            int physicalRow = getScreenRowPhysical(cursorRow);
+
+            // Shift cells to the right to make room
+            for (int i = width - 1; i > cursorCol; i--) {
+                Cell source = buffer[physicalRow][i - 1];
+                buffer[physicalRow][i].reset(source.character, source.fgColor, source.bgColor,
+                        source.bold, source.italic, source.underline);
+            }
+
+            // Insert the new character
+            buffer[physicalRow][cursorCol].reset(c, currentFg, currentBg, bold, italic, underline);
+            cursorCol++;
+        }
+    }
+
+
+    public void backspace() {
+        if (cursorCol > 0) {
+            cursorCol--;
+            clearCell(cursorCol, cursorRow);
+        } else {
+            // Reverse Wrap
+            if (cursorRow > 0) {
+                cursorRow--;
+                cursorCol = width - 1;
+                clearCell(cursorCol, cursorRow);
+            }
+        }
+    }
+
+    // reset a cell to empty
+    private void clearCell(int col, int row) {
+        int physicalRow = getScreenRowPhysical(row);
+        buffer[physicalRow][col].reset(' ', 0, 0, false, false, false);
     }
 }
